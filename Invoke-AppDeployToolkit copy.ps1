@@ -233,18 +233,29 @@ function Uninstall-ADTDeployment
 
     ## <Perform Uninstallation tasks here>
     ## <Uninstallation>
-    # 1. Close the app first (v4 standard)
-    Show-ADTInstallationWelcome -CloseProcesses 'chrome' -ForceClose
+    # 1. Native Windows Kill (The safest way in your VM environment)
+    Get-Process -Name 'chrome' -ErrorAction SilentlyContinue | Stop-Process -Force
     
-    # 2. Kill the Main App Registry (The 'House' of settings)
-    # This is the path you saw earlier that was empty/place holder
-    Remove-ADTRegistryKey -Key 'HKLM:\SOFTWARE\Google\Chrome' -Recurse
+    # 2. THE 1% FIX: MSI Uninstallation
+    # V4 TIP: We use Write-ADTLog (the native v4 cmdlet)
+    Write-ADTLog -Message "Attempting Managed MSI Uninstallation for $CustomProductCode" -Severity 1
     
-    # 3. Kill the Program Files directory
-    Remove-ADTFolder -Path "$env:ProgramFiles\Google\Chrome"
+    # Execute through PSADT v4 wrapper. 
+    # -ContinueOnError $true is CRITICAL because of the 1721 error we found.
+    Start-ADTMsiProcess -Action 'Uninstall' -ProductCode "$CustomProductCode" -ContinueOnError $true
     
-    # 4. Optional: If you want to trigger the MSI uninstall too
-    # Remove-ADTMsiProcess -Action 'Uninstall' -FilePath (Join-Path -Path $adtSession.DirFiles -ChildPath 'googlechromestandaloneenterprise64.msi')
+    # 3. THE CLEANUP (Artifact Sanitization)
+    # v4 Cmdlets: Remove-ADTRegistryKey and Remove-ADTFolder
+    Remove-ADTRegistryKey -Key 'HKLM:\SOFTWARE\Google\Chrome' -Recurse -ErrorAction SilentlyContinue
+    Remove-ADTFolder -Path "$env:ProgramFiles\Google\Chrome" -ErrorAction SilentlyContinue
+    
+    # 4. Scorched Earth: Manual Registry De-registration
+    # This fixes the "Zombie" registration in Apps & Features that the 1721 error leaves behind.
+    $UninstallPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$CustomProductCode"
+    if (Test-Path $UninstallPath) {
+        Write-ADTLog -Message "MSI Engine failed to de-register via 1721/1603. Manually purging Uninstall hive." -Severity 2
+        Remove-ADTRegistryKey -Key "$UninstallPath" -Recurse -ErrorAction SilentlyContinue
+    }
     ## </Uninstallation>
     ##================================================
     ## MARK: Post-Uninstallation

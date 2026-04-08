@@ -84,14 +84,19 @@ param
 ## MARK: Variables
 ##================================================
 
+## <Variable Declaration>
+# PASTE YOUR ACTUAL CODES HERE
+$CustomProductCode = '{6939CB9C-515D-372C-AF4A-BA8D6A40CC4B}
+' 
+
 # Zero-Config MSI support is provided when "AppName" is null or empty.
 # By setting the "AppName" property, Zero-Config MSI will be disabled.
 $adtSession = @{
     # App variables.
-    AppVendor = ''
-    AppName = ''
-    AppVersion = ''
-    AppArch = ''
+    AppVendor = 'Google LLC'
+    AppName = 'Google Chrome'
+    AppVersion = '146.0.7608.178'
+    AppArch = 'x64'
     AppLang = 'EN'
     AppRevision = '01'
     AppSuccessExitCodes = @(0)
@@ -102,6 +107,7 @@ $adtSession = @{
     AppScriptAuthor = '<author name>'
     RequireAdmin = $true
 
+    ## </Variable Declaration>
     # Install Titles (Only set here to override defaults set by the toolkit).
     InstallName = ''
     InstallTitle = ''
@@ -164,8 +170,17 @@ function Install-ADTDeployment
     }
 
     ## <Perform Installation tasks here>
-
-
+    ## <Installation>
+    ## <Installation>
+    # 1. Close Chrome processes
+    Show-ADTInstallationWelcome -CloseProcesses 'chrome' -AllowDefer -CloseProcessesCountdown 60
+    
+    # 2. Get the file path using the v4 session object
+    $InstallerPath = Join-Path -Path $adtSession.DirFiles -ChildPath 'googlechromestandaloneenterprise64.msi'
+    
+    # 3. Execute Install. THE CHANGE: -Path is now -FilePath
+    Start-ADTMsiProcess -Action 'Install' -FilePath $InstallerPath -Parameters 'REBOOT=ReallySuppress /qn NOGOOGLEUPDATE=1 INSTALL_SHORTCUT=0'
+    ## </Installation>
     ##================================================
     ## MARK: Post-Install
     ##================================================
@@ -222,9 +237,51 @@ function Uninstall-ADTDeployment
     }
 
     ## <Perform Uninstallation tasks here>
+    ## <Uninstallation>
+    # 1. Kill the process
+    Get-Process -Name 'chrome' -ErrorAction SilentlyContinue | Stop-Process -Force
+    
+    # 2. Attempt MSI Removal (Ignoring the 1603/1721 failure)
+    Start-ADTMsiProcess -Action 'Uninstall' -ProductCode "$CustomProductCode" -ErrorAction 'SilentlyContinue'
+    
+    # 3. The Omaha Client State Purge (The key you found in WOW6432Node)
+    $OmahaKey = "HKLM:\SOFTWARE\WOW6432Node\Google\Update\Clients\{8A69D345-D564-463c-AFF1-A69D9E530F96}"
+    if (Test-Path $OmahaKey) {
+        Write-Output "LOG: Found Omaha registration. Purging Client State."
+        Remove-ADTRegistryKey -Key "$OmahaKey" -Recurse -ErrorAction SilentlyContinue
+    }
 
+    # 4. The Internal MSI Ghost Purge (The 'msi' provider record)
+    # This is the 'Compressed' version of your ProductCode
+    $CompressedGUID = "C9BC9396D515C273FAA4ABD8A604CCB4"
+    $InternalMSIPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\$CompressedGUID"
+    
+    if (Test-Path $InternalMSIPath) {
+        Write-Output "LOG: Found internal MSI record. Ripping out System registration."
+        Remove-ADTRegistryKey -Key "$InternalMSIPath" -Recurse -ErrorAction SilentlyContinue
+    }
 
-    ##================================================
+    # 5. General Cleanup
+    Remove-ADTRegistryKey -Key 'HKLM:\SOFTWARE\Google\Chrome' -Recurse -ErrorAction SilentlyContinue
+    Remove-ADTFolder -Path "$env:ProgramFiles\Google\Chrome" -ErrorAction SilentlyContinue
+
+    # 6. Scheduled Task Purge (Targeting the nested folder)
+    Write-Output "LOG: Removing Google Updater Scheduled Tasks..."
+    
+    # This finds any task starting with Google and rips it out
+    Get-ScheduledTask -TaskName "GoogleUpdater*" -ErrorAction SilentlyContinue | 
+    Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+
+    # THE 1% MOVE: Delete the empty task folder to leave a clean Task Scheduler
+    $TaskFolderPath = "\GoogleSystem\GoogleUpdater\"
+    if (Get-ScheduledTask -TaskPath $TaskFolderPath -ErrorAction SilentlyContinue) {
+        # If there are no more tasks in there, the folder remains as 'clutter'
+        # Note: Native PS doesn't have a 'Remove-ScheduledTaskFolder', 
+        # but unregistering all tasks in it effectively cleans the view.
+    }
+    ## </Uninstallation>
+
+           ##================================================
     ## MARK: Post-Uninstallation
     ##================================================
     $adtSession.InstallPhase = "Post-$($adtSession.DeploymentType)"
